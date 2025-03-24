@@ -9,8 +9,8 @@ import numpy as np
 app = FastAPI()
 
 
-@app.post("/set_credentials/", tags=["Settings"])
-async def set_credentials(openai_key: str = Form(...), database_name: str = Form(...), mongodb_uri: str = Form(...)):
+# @app.post("/set_credentials/", tags=["Settings"])
+def set_credentials(openai_key: str = Form(...), database_name: str = Form(...), mongodb_uri: str = Form(...)):
     global user_openai_key, user_mongodb_uri
 
     # Store the user's OpenAI key and MongoDB URI
@@ -54,8 +54,8 @@ def tag(text: str, tags: list[str]):
     
 
 @app.post("/upload/", tags=["Rag System"])
-async def upload_file(file: UploadFile = File(...)):
-   
+async def upload_file(file: UploadFile = File(...), database_name: str = Form(...), mongodb_uri: str = Form(...), openai_key: str = Form(...)):
+    set_credentials(openai_key, database_name, mongodb_uri)
     extracted_text = ""
     
     if file.content_type == "application/pdf":
@@ -65,7 +65,6 @@ async def upload_file(file: UploadFile = File(...)):
         pdf_reader = PdfReader(io.BytesIO(contents))
         for page in pdf_reader.pages:
             extracted_text += page.extract_text() + "\n"
-    
         print("text extracted successfully: ")      
      
     else:
@@ -78,11 +77,9 @@ async def upload_file(file: UploadFile = File(...)):
             db_tags.append(tag_doc["tag"])
     except Exception:
         raise HTTPException(status_code=404, detail="Database not found. Kindly set credentials above.") 
-    
         
     identified_tags = tag(extracted_text, db_tags)
     print("tags successfully identified")    
-    
 
     try:
         embedding = generate_embedding(extracted_text)
@@ -90,6 +87,7 @@ async def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         error_message = str(e).split(" - ")[1].split("'error': ")[1].split(", 'type':")[0].strip("{}").split("'message': ")[1].strip("'")
         raise HTTPException(status_code=e.status_code, detail=error_message) 
+        # raise HTTPException(status_code=404, detail=str(e)) 
     
     try:
         
@@ -109,13 +107,13 @@ async def upload_file(file: UploadFile = File(...)):
     
 
 @app.get("/query/", tags=["Rag System"])
-async def query_database(query: str):
+async def query_database(query: str, openai_key: str, database_name: str, mongodb_uri: str):
+    set_credentials(openai_key, database_name, mongodb_uri)
     try:
         db_tags = [tag_doc["tag"] async for tag_doc in tags_collection.find({}, {"_id": 0, "tag": 1})]
         query_tags = tag(query, db_tags)
     except Exception:
         raise HTTPException(status_code=404, detail="Database not found. Kindly set credentials above.") 
-    
     print("query has been tagged", query_tags )
     
     # Generate OpenAI embedding for query
@@ -125,12 +123,10 @@ async def query_database(query: str):
     except Exception as e:
         error_message = str(e).split(" - ")[1].split("'error': ")[1].split(", 'type':")[0].strip("{}").split("'message': ")[1].strip("'")
         raise HTTPException(status_code=e.status_code, detail=error_message) 
-    
     # Retrieve matching embeddings based on tags
     matching_docs = [doc async for doc in files_collection.find({"tags": {"$in": query_tags}}, {"_id": 0, "embedding": 1, "text": 1})]
 
-    # print("matching docs: ", matching_docs)
-    
+    # print("matching docs: ", matching_docs) 
     if not matching_docs:
         return {"response": "No relevant documents found."}
 
@@ -139,21 +135,19 @@ async def query_database(query: str):
         (doc["text"], np.dot(query_embedding, doc["embedding"]))
         for doc in matching_docs
     ]
-
     # Sort by highest similarity
     most_relevant_text = sorted(similarities, key=lambda x: x[1], reverse=True)[0][0]
-
     # Use ChatGPT to generate response
     chat_response = openai.chat.completions.create(
         model="gpt-4",
         messages=[{"role": "system", "content": "You are an assistant that answers questions based on retrieved documents."},
                   {"role": "user", "content": f"Answer based on this document:\n{most_relevant_text}\n\nQuery: {query}"}]
     )
-
     return {"response": chat_response.choices[0].message.content}
 
 @app.post("/add_tag/", tags=["Tags"])
-async def add_tag(tag: str):
+async def add_tag(tag: str, database_name: str, mongodb_uri: str):
+    set_credentials("", database_name, mongodb_uri)
     try:
         # Find the file in MongoDB
         if await tags_collection.find_one({"tag": tag}):
@@ -166,7 +160,8 @@ async def add_tag(tag: str):
 
 # Endpoint to view all tags for a specific file
 @app.get("/get_tags/", tags=["Tags"])
-async def view_tags():
+async def view_tags(database_name: str, mongodb_uri: str):
+    set_credentials("", database_name, mongodb_uri)
     # Retrieve all tags from the tags collection
     tags = []
     try:
@@ -179,8 +174,9 @@ async def view_tags():
 
 # Endpoint to delete a tag from a file
 @app.delete("/delete_tag/", tags=["Tags"])
-async def delete_tag(tag_name: str):
+async def delete_tag(tag_name: str, database_name: str, mongodb_uri: str):
     # Find the file in MongoDB
+    set_credentials("", database_name, mongodb_uri)
     try: 
         if not await tags_collection.find_one({"tag": tag_name}):
             raise HTTPException(status_code=404, detail="Tag not found")
